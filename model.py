@@ -11,6 +11,7 @@ for filename in glob.glob('TED_transcripts/*.txt'):
     with open(filename ,'r') as f:
         corpus += 2*'\n' + f.read().replace('\n', ' ')
 
+
 train_split = 0.98   # fraction of training data 
 train_size = int((train_split)*len(corpus))
 

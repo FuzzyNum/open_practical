@@ -5,6 +5,7 @@ import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
+import string
 
 # Load the corpus
 corpus = ""
@@ -12,6 +13,8 @@ for filename in glob.glob('TED_transcripts/*.txt'):
     with open(filename, 'r') as f:
         corpus += 2 * '\n' + f.read().replace('\n', ' ')
 
+allowed_characters = string.ascii_lowercase + string.ascii_uppercase + " "  # only letters and space
+corpus = ''.join([ch for ch in corpus if ch in allowed_characters])
 # Training data split
 train_split = 0.98  # fraction of training data
 train_size = int(train_split * len(corpus))
@@ -23,14 +26,15 @@ val_data = corpus[train_size:]
 # Vocabulary and other parameters
 vocab = list(set(corpus))
 input_dim = len(vocab)
-hidden_dim = 128
-sample_size = 128
+hidden_dim = 256
+sample_size = 256
 batch_size = 64
-num_layers = 3
-num_epochs = 150
-learning_rate = 1e-5
+num_layers = 2
+num_epochs = 100
+learning_rate = 1e-3
 onehot_mat = torch.eye(input_dim)  # matrix for one-hot lookup
-char2oh = {vocab[i]: onehot_mat[i] for i in range(input_dim)}
+char2idx = {ch: idx for idx, ch in enumerate(vocab)}
+idx2char = {idx: ch for ch, idx in char2idx.items()}
 
 # Network definition
 class network(nn.Module):
@@ -41,7 +45,8 @@ class network(nn.Module):
         self.num_layers = num_layers
         self.batch_size = batch_size
 
-        self.lstm = nn.LSTM(self.ip_dim, self.hi_dim, self.num_layers, batch_first=True)
+        self.embedding = nn.Embedding(self.ip_dim, self.hi_dim)
+        self.lstm = nn.LSTM(self.hi_dim, self.hi_dim, self.num_layers, batch_first=True)
         self.linear = nn.Linear(hi_dim, input_dim)
 
     def reset(self):
@@ -50,7 +55,8 @@ class network(nn.Module):
         self.hidden = self.h0, self.c0
 
     def forward(self, ip):
-        op_pred, self.hidden = self.lstm(ip, self.hidden)
+        emb = self.embedding(ip)
+        op_pred, self.hidden = self.lstm(emb, self.hidden)
         op_pred = self.linear(op_pred).view(-1, input_dim)
         return op_pred
 
@@ -64,13 +70,13 @@ def random_sample(data):
 
 # Generate a batch of training data
 def genbatch(dataset):
-    ip = torch.zeros(batch_size, sample_size, input_dim)
-    target = torch.zeros(batch_size, sample_size).long()
+    ip = torch.zeros(batch_size, sample_size).long()      # (batch, seq_len)
+    target = torch.zeros(batch_size, sample_size).long()  # (batch, seq_len)
     for b in range(batch_size):
         ip_sample, target_sample = random_sample(dataset)
         for letter in range(sample_size):
-            ip[b, letter, :] = char2oh[ip_sample[letter]].detach()  # <-- FIXED HERE
-            target[b, letter] = vocab.index(target_sample[letter])
+            ip[b, letter] = char2idx[ip_sample[letter]]
+            target[b, letter] = char2idx[target_sample[letter]]
     return ip, target
 
 

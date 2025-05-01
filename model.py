@@ -3,124 +3,146 @@ import os
 import torch
 import numpy as np
 import torch.nn as nn
-from torch.autograd import Variable
 import torch.optim as optim
 from tqdm import tqdm
-from tqdm import trange
+import string
+
+# Load the corpus
 corpus = ""
 for filename in glob.glob('TED_transcripts/*.txt'):
-    with open(filename ,'r') as f:
-        corpus += 2*'\n' + f.read().replace('\n', ' ')
+    with open(filename, 'r') as f:
+        corpus += 2 * '\n' + f.read().replace('\n', ' ')
 
+allowed_characters = string.ascii_lowercase + string.ascii_uppercase + " "
+corpus = ''.join([ch for ch in corpus if ch in allowed_characters])
 
-train_split = 0.98   # fraction of training data 
-train_size = int((train_split)*len(corpus))
+# Training data split
+train_split = 0.98
+train_size = int(train_split * len(corpus))
 
-print(len(set(corpus)))
 train_data = corpus[:train_size]
 val_data = corpus[train_size:]
 
+# Vocabulary and other parameters
 vocab = list(set(corpus))
 input_dim = len(vocab)
-hidden_dim = 128 
-sample_size = 128
+hidden_dim = 256
+sample_size = 256
 batch_size = 64
 num_layers = 2
-num_epochs = 20
-learning_rate = 1e-5
-onehot_mat = torch.eye(input_dim)  # matrix for one-hot lookup
-char2oh = {vocab[i]:onehot_mat[i] for i in range(input_dim)}  
+num_epochs = 100
+learning_rate = 1e-3
+char2idx = {ch: idx for idx, ch in enumerate(vocab)}
+idx2char = {idx: ch for ch, idx in char2idx.items()}
 
+
+# Positional Encoding
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=1000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.pe = pe.unsqueeze(1)  # (max_len, 1, d_model)
+
+    def forward(self, x):
+        return x + self.pe[:x.size(0)].to(x.device)
+
+
+# Transformer-based network
 class network(nn.Module):
-    def __init__(self, input_dim, hi_dim, num_layers):    
-        super(network, self).__init__()
-        self.ip_dim = input_dim
-        self.hi_dim = hi_dim
-        self.num_layers = num_layers
-        self.batch_size = batch_size
-    
-        self.lstm = nn.LSTM(self.ip_dim, self.hi_dim, self.num_layers, batch_first=True)
-        self.linear = nn.Linear(hi_dim, input_dim) 
-        
+    def __init__(self, input_dim, hidden_dim, num_layers, nhead=8):
+        super().__init__()
+        self.embedding = nn.Embedding(input_dim, hidden_dim)
+        self.pos_encoder = PositionalEncoding(hidden_dim)
+
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, dropout=0.1)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.output = nn.Linear(hidden_dim, input_dim)
+
     def reset(self):
-        self.h0 = Variable(torch.zeros(self.num_layers, self.batch_size, self.hi_dim))
-        self.c0 = Variable(torch.zeros(self.num_layers, self.batch_size, self.hi_dim))
-        self.hidden = self.h0, self.c0
-    
+        pass  # no hidden states for transformer
+
     def forward(self, ip):
-        op_pred, self.hidden = self.lstm(ip, self.hidden)
-        op_pred = self.linear(op_pred).view(-1, input_dim)
-        return op_pred
-    
+        # ip: (batch, seq_len)
+        ip = ip.transpose(0, 1)  # -> (seq_len, batch)
+        emb = self.embedding(ip) * np.sqrt(hidden_dim)
+        emb = self.pos_encoder(emb)  # (seq_len, batch, hidden)
+        out = self.transformer(emb)  # (seq_len, batch, hidden)
+        out = self.output(out)  # (seq_len, batch, vocab)
+        return out.view(-1, input_dim)  # flatten to (seq_len * batch, vocab)
+
+
+# Generate a random sample from the dataset
 def random_sample(data):
-    """Generate a random text snippet and label containing the corresponding next letters"""
-    start = np.random.randint(0, len(data) - sample_size)
-    end = start + sample_size 
-    sample = data[start:end]
-    label = data[start+1:end+1]
+    start = np.random.randint(0, len(data) - sample_size - 1)
+    sample = data[start:start + sample_size]
+    label = data[start + 1:start + sample_size + 1]
     return sample, label
 
+
+# Generate a batch of training data
 def genbatch(dataset):
-    """Generate a unique batch of text samples in randomized order from the dataset"""
-    ip = torch.zeros(batch_size, sample_size, input_dim)
-    target = torch.zeros(batch_size, sample_size).type(torch.LongTensor)
+    ip = torch.zeros(batch_size, sample_size).long()
+    target = torch.zeros(batch_size, sample_size).long()
     for b in range(batch_size):
         ip_sample, target_sample = random_sample(dataset)
-        for letter in range(sample_size):
-            ip[b, letter,:] = char2oh[ip_sample[letter]]
-            target[b, letter] = vocab.index(target_sample[letter])
-    
+        for t in range(sample_size):
+            ip[b, t] = char2idx[ip_sample[t]]
+            target[b, t] = char2idx[target_sample[t]]
     return ip, target
 
-def validate(model):
-    """Returns validation loss"""
-    val_copy = val_data
-    val_loss = 0
-    val_batch_num = 20 # number of mini-batches of validation set to evaluate loss
-    for i in range(val_batch_num):
-        model.reset()
-        val_ip, val_target = genbatch(val_copy)
-        val_ip = Variable((val_ip), volatile=True)
-        val_target = Variable((val_target), volatile=True).view(-1)
-        val_pred = model(val_ip)
-        val_loss += criterion(val_pred,val_target)
-    val_loss = val_loss.data.item()/val_batch_num
-    return val_loss
 
+# Validation function
+def validate(model):
+    val_loss = 0
+    val_batch_num = 20
+    model.eval()
+    with torch.no_grad():
+        for _ in range(val_batch_num):
+            model.reset()
+            val_ip, val_target = genbatch(val_data)
+            val_target = val_target.view(-1)
+            val_pred = model(val_ip)
+            val_loss += criterion(val_pred, val_target).item()
+    model.train()
+    return val_loss / val_batch_num
+
+
+# Save checkpoint function
 def save_checkpoint(model, val_loss, e, optimizer):
-    """Saves model checkpoint. File name = TED_(validation loss)"""
-    cp_name = 'e{}_{:.4f}.pth'.format(e+1,val_loss)
+    cp_name = f'e{e+1}_{val_loss:.4f}.pth'
     cp_path = cp_dir + cp_name
     opt_path = opt_dir + cp_name
-    torch.save(model.state_dict(), cp_path) #save model
-    torch.save(optimizer.state_dict(), opt_path) #save optimizer
+    torch.save(model.state_dict(), cp_path)
+    torch.save(optimizer.state_dict(), opt_path)
 
 
+# Main script
 if __name__ == "__main__":
-
     TED = network(input_dim, hidden_dim, num_layers)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(TED.parameters(), lr=learning_rate)
 
     cp_dir = "./checkpoints/"
-    if not os.path.isdir(cp_dir):
-        os.mkdir(cp_dir)
+    os.makedirs(cp_dir, exist_ok=True)
 
     opt_dir = "./opt/"
-    if not os.path.isdir(opt_dir):
-        os.mkdir(opt_dir)
+    os.makedirs(opt_dir, exist_ok=True)
 
-    batches_per_epoch = 500
+    batches_per_epoch = 200
 
     for e in range(num_epochs):
         print(f"\nEpoch {e+1}/{num_epochs}")
         batch_losses = []
 
-        for batch in tqdm(range(batches_per_epoch), desc="Training", leave=False):
+        for _ in tqdm(range(batches_per_epoch), desc="Training", leave=False):
             TED.reset()
             ip, target = genbatch(train_data)
-            ip = Variable(ip)
-            target = Variable(target).view(-1)
+            target = target.view(-1)
             pred = TED(ip)
 
             loss = criterion(pred, target)

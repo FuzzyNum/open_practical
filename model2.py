@@ -36,6 +36,9 @@ onehot_mat = torch.eye(input_dim)  # matrix for one-hot lookup
 char2idx = {ch: idx for idx, ch in enumerate(vocab)}
 idx2char = {idx: ch for ch, idx in char2idx.items()}
 
+
+
+
 # Network definition
 class network(nn.Module):
     def __init__(self, input_dim, hi_dim, num_layers):
@@ -46,7 +49,8 @@ class network(nn.Module):
         self.batch_size = batch_size
 
         self.embedding = nn.Embedding(self.ip_dim, self.hi_dim)
-        self.lstm = nn.LSTM(self.hi_dim, self.hi_dim, self.num_layers, batch_first=True)
+        self.lstm1 = nn.LSTM(self.hi_dim, self.hi_dim, self.num_layers, batch_first=True)
+        
         self.linear = nn.Linear(hi_dim, input_dim)
 
     def reset(self):
@@ -120,7 +124,7 @@ if __name__ == "__main__":
     if not os.path.isdir(opt_dir):
         os.mkdir(opt_dir)
 
-    batches_per_epoch = 500
+    batches_per_epoch = 200
 
     for e in range(num_epochs):
         print(f"\nEpoch {e+1}/{num_epochs}")
